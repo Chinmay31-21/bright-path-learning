@@ -1,6 +1,8 @@
 import { MessageCircle, X, Send, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState, useRef, useEffect } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { useToast } from "@/hooks/use-toast";
 
 interface Message {
   role: "user" | "assistant";
@@ -12,12 +14,13 @@ const AIChatButton = () => {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
-      content: "Hi there! 👋 I'm your AI Mentor. I can help you with:\n\n• Explaining concepts\n• Solving problems step-by-step\n• Exam tips & motivation\n• Study planning\n\nHow can I help you today?"
+      content: "Hi there! 👋 I'm your AI Mentor powered by Gemini. I can help you with:\n\n• Explaining concepts\n• Solving problems step-by-step\n• Exam tips & motivation\n• Study planning\n\nHow can I help you today?"
     }
   ]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const { toast } = useToast();
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -32,23 +35,41 @@ const AIChatButton = () => {
 
     const userMessage = input.trim();
     setInput("");
-    setMessages(prev => [...prev, { role: "user", content: userMessage }]);
+    const newMessages: Message[] = [...messages, { role: "user", content: userMessage }];
+    setMessages(newMessages);
     setIsLoading(true);
 
-    // Simulate AI response (replace with actual API call)
-    setTimeout(() => {
-      const responses = [
-        "That's a great question! Let me break it down for you step by step...",
-        "I understand what you're asking. Here's how I would approach this problem...",
-        "Excellent! This topic is important. Let me explain it in a simple way...",
-        "You're on the right track! Here are some tips to help you understand better..."
-      ];
+    try {
+      const { data, error } = await supabase.functions.invoke('ai-mentor', {
+        body: { 
+          messages: newMessages.slice(1) // Skip the initial greeting
+        }
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
       setMessages(prev => [...prev, { 
         role: "assistant", 
-        content: responses[Math.floor(Math.random() * responses.length)] + "\n\nWould you like me to explain anything else? 😊"
+        content: data.response 
       }]);
+    } catch (error) {
+      console.error('Error calling AI mentor:', error);
+      toast({
+        title: "Error",
+        description: "Failed to get AI response. Please try again.",
+        variant: "destructive"
+      });
+      // Remove the user message if we failed
+      setMessages(messages);
+    } finally {
       setIsLoading(false);
-    }, 1500);
+    }
   };
 
   return (
