@@ -1,1 +1,7 @@
 project_id = "vluonxnyxjevifoeqdsi"
+
+[functions.ai-mentor]
+verify_jwt = false
+
+[functions.setup-admin]
+verify_jwt = false
