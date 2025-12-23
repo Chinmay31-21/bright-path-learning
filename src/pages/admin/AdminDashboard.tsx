@@ -11,7 +11,8 @@ import {
   Users, 
   FileText,
   LogOut,
-  LayoutDashboard
+  LayoutDashboard,
+  Sparkles
 } from 'lucide-react';
 import SubjectsManager from '@/components/admin/SubjectsManager';
 import ChaptersManager from '@/components/admin/ChaptersManager';
@@ -19,6 +20,7 @@ import VideosManager from '@/components/admin/VideosManager';
 import QuizzesManager from '@/components/admin/QuizzesManager';
 import SyllabusManager from '@/components/admin/SyllabusManager';
 import StudentsManager from '@/components/admin/StudentsManager';
+import AITrainingManager from '@/components/admin/AITrainingManager';
 
 const AdminDashboard = () => {
   const { user, signOut, isAdmin } = useAuth();
@@ -73,7 +75,7 @@ const AdminDashboard = () => {
       {/* Main Content */}
       <main className="container mx-auto px-4 py-8">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid grid-cols-6 w-full max-w-4xl mx-auto">
+          <TabsList className="grid grid-cols-7 w-full max-w-5xl mx-auto">
             <TabsTrigger value="subjects" className="flex items-center gap-2">
               <BookOpen className="w-4 h-4" />
               <span className="hidden sm:inline">Subjects</span>
@@ -93,6 +95,10 @@ const AdminDashboard = () => {
             <TabsTrigger value="quizzes" className="flex items-center gap-2">
               <ClipboardList className="w-4 h-4" />
               <span className="hidden sm:inline">Quizzes</span>
+            </TabsTrigger>
+            <TabsTrigger value="ai-training" className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4" />
+              <span className="hidden sm:inline">AI Training</span>
             </TabsTrigger>
             <TabsTrigger value="students" className="flex items-center gap-2">
               <Users className="w-4 h-4" />
@@ -118,6 +124,10 @@ const AdminDashboard = () => {
           
           <TabsContent value="quizzes">
             <QuizzesManager />
+          </TabsContent>
+          
+          <TabsContent value="ai-training">
+            <AITrainingManager />
           </TabsContent>
           
           <TabsContent value="students">

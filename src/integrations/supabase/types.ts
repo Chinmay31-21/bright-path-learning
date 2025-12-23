@@ -14,6 +14,66 @@ export type Database = {
   }
   public: {
     Tables: {
+      ai_training_documents: {
+        Row: {
+          board: Database["public"]["Enums"]["education_board"] | null
+          chapter_id: string | null
+          class_level: number | null
+          content: string
+          created_at: string
+          document_type: string | null
+          id: string
+          is_active: boolean | null
+          subject_id: string | null
+          title: string
+          updated_at: string
+          uploaded_by: string | null
+        }
+        Insert: {
+          board?: Database["public"]["Enums"]["education_board"] | null
+          chapter_id?: string | null
+          class_level?: number | null
+          content: string
+          created_at?: string
+          document_type?: string | null
+          id?: string
+          is_active?: boolean | null
+          subject_id?: string | null
+          title: string
+          updated_at?: string
+          uploaded_by?: string | null
+        }
+        Update: {
+          board?: Database["public"]["Enums"]["education_board"] | null
+          chapter_id?: string | null
+          class_level?: number | null
+          content?: string
+          created_at?: string
+          document_type?: string | null
+          id?: string
+          is_active?: boolean | null
+          subject_id?: string | null
+          title?: string
+          updated_at?: string
+          uploaded_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ai_training_documents_chapter_id_fkey"
+            columns: ["chapter_id"]
+            isOneToOne: false
+            referencedRelation: "chapters"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ai_training_documents_subject_id_fkey"
+            columns: ["subject_id"]
+            isOneToOne: false
+            referencedRelation: "subjects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       chapters: {
         Row: {
           chapter_number: number
@@ -242,6 +302,63 @@ export type Database = {
             columns: ["chapter_id"]
             isOneToOne: false
             referencedRelation: "chapters"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      student_roadmap: {
+        Row: {
+          chapter_id: string | null
+          completed_at: string | null
+          created_at: string
+          id: string
+          milestone_description: string | null
+          milestone_title: string
+          priority: number | null
+          status: string | null
+          subject_id: string | null
+          target_date: string | null
+          user_id: string
+        }
+        Insert: {
+          chapter_id?: string | null
+          completed_at?: string | null
+          created_at?: string
+          id?: string
+          milestone_description?: string | null
+          milestone_title: string
+          priority?: number | null
+          status?: string | null
+          subject_id?: string | null
+          target_date?: string | null
+          user_id: string
+        }
+        Update: {
+          chapter_id?: string | null
+          completed_at?: string | null
+          created_at?: string
+          id?: string
+          milestone_description?: string | null
+          milestone_title?: string
+          priority?: number | null
+          status?: string | null
+          subject_id?: string | null
+          target_date?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "student_roadmap_chapter_id_fkey"
+            columns: ["chapter_id"]
+            isOneToOne: false
+            referencedRelation: "chapters"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "student_roadmap_subject_id_fkey"
+            columns: ["subject_id"]
+            isOneToOne: false
+            referencedRelation: "subjects"
             referencedColumns: ["id"]
           },
         ]

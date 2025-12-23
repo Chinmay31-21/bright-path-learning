@@ -10,6 +10,7 @@ import Tests from "./pages/Tests";
 import Courses from "./pages/Courses";
 import Auth from "./pages/Auth";
 import AdminDashboard from "./pages/admin/AdminDashboard";
+import Roadmap from "./pages/Roadmap";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -27,6 +28,7 @@ const App = () => (
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/tests" element={<Tests />} />
             <Route path="/courses" element={<Courses />} />
+            <Route path="/roadmap" element={<Roadmap />} />
             <Route path="/admin" element={<AdminDashboard />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
