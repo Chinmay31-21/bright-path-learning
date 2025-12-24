@@ -13,6 +13,7 @@ import AdminDashboard from "./pages/admin/AdminDashboard";
 import Roadmap from "./pages/Roadmap";
 import StudentStudyHub from "./pages/StudentStudyHub";
 import StudyMaterials from "./pages/StudyMaterials";
+import Profile from "./pages/Profile";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -32,6 +33,7 @@ const App = () => (
             <Route path="/courses" element={<Courses />} />
             <Route path="/roadmap" element={<Roadmap />} />
             <Route path="/study-materials" element={<StudyMaterials />} />
+            <Route path="/profile" element={<Profile />} />
             <Route path="/admin" element={<AdminDashboard />} />
             <Route path="/student-study-hub" element={<StudentStudyHub />} /> {/* Add the new route */}
             <Route path="*" element={<Navigate to="/" />} /> {/* Redirect all other paths to home */}

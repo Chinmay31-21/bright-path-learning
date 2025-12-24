@@ -1,8 +1,21 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
-import { Loader2, Users, TrendingUp, Award } from 'lucide-react';
+import { Loader2, Users, TrendingUp, Award, Trash2 } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
+import { useToast } from '@/hooks/use-toast';
 
 interface Profile {
   id: string;
@@ -27,6 +40,9 @@ interface Progress {
 }
 
 const StudentsManager = () => {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
   const { data: profiles, isLoading: loadingProfiles } = useQuery({
     queryKey: ['all-profiles'],
     queryFn: async () => {
@@ -74,6 +90,62 @@ const StudentsManager = () => {
     const totalTimeSpent = userProgress.reduce((acc, p) => acc + p.time_spent_seconds, 0);
     
     return { totalQuizzes, avgScore, chaptersCompleted, totalTimeSpent };
+  };
+
+  // Delete student mutation - removes profile and related data
+  // Note: This only removes the user's data from the application tables
+  // The user can sign up again with the same email
+  const deleteStudentMutation = useMutation({
+    mutationFn: async (userId: string) => {
+      // Delete profile (this will cascade to related data due to foreign keys)
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .delete()
+        .eq('user_id', userId);
+      
+      if (profileError) throw profileError;
+
+      // Delete user role
+      const { error: roleError } = await supabase
+        .from('user_roles')
+        .delete()
+        .eq('user_id', userId);
+      
+      if (roleError) throw roleError;
+
+      // Delete quiz attempts
+      await supabase
+        .from('quiz_attempts')
+        .delete()
+        .eq('user_id', userId);
+
+      // Delete student progress
+      await supabase
+        .from('student_progress')
+        .delete()
+        .eq('user_id', userId);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['all-profiles'] });
+      queryClient.invalidateQueries({ queryKey: ['all-quiz-attempts'] });
+      queryClient.invalidateQueries({ queryKey: ['all-student-progress'] });
+      toast({
+        title: "Student removed",
+        description: "The student has been removed successfully. They can sign up again if needed.",
+      });
+    },
+    onError: (error) => {
+      console.error('Error deleting student:', error);
+      toast({
+        title: "Error",
+        description: "Failed to remove student. Please try again.",
+        variant: "destructive",
+      });
+    }
+  });
+
+  const handleDeleteStudent = (userId: string) => {
+    deleteStudentMutation.mutate(userId);
   };
 
   const formatTime = (seconds: number) => {
@@ -170,6 +242,7 @@ const StudentsManager = () => {
                 <TableHead>Chapters Completed</TableHead>
                 <TableHead>Time Spent</TableHead>
                 <TableHead>Joined</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -196,6 +269,41 @@ const StudentsManager = () => {
                     <TableCell>{stats.chaptersCompleted}</TableCell>
                     <TableCell>{formatTime(stats.totalTimeSpent)}</TableCell>
                     <TableCell>{new Date(profile.created_at).toLocaleDateString()}</TableCell>
+                    <TableCell className="text-right">
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Remove Student</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              Are you sure you want to remove <strong>{profile.full_name || 'this student'}</strong>? 
+                              This will delete their profile, progress, and quiz attempts. 
+                              <br /><br />
+                              <span className="text-muted-foreground">
+                                Note: The student can sign up again with the same email if needed.
+                              </span>
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction
+                              onClick={() => handleDeleteStudent(profile.user_id)}
+                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                            >
+                              Remove Student
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </TableCell>
                   </TableRow>
                 );
               })}
