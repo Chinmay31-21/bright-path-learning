@@ -29,8 +29,9 @@ serve(async (req) => {
     try {
       let query = supabase
         .from('ai_training_documents')
-        .select('title, content, document_type, board, class_level')
+        .select('title, content, document_type, board, class_level, file_name, parsed_content')
         .eq('is_active', true)
+        .eq('training_status', 'completed')
         .limit(20);
 
       // If context is provided, filter by board/class
@@ -46,7 +47,12 @@ serve(async (req) => {
       if (trainingDocs && trainingDocs.length > 0) {
         trainingContext = '\n\n--- KNOWLEDGE BASE ---\n';
         trainingDocs.forEach(doc => {
-          trainingContext += `\n[${doc.document_type?.toUpperCase() || 'INFO'}] ${doc.title}:\n${doc.content}\n`;
+          const docContent = doc.parsed_content || doc.content;
+          trainingContext += `\n[${doc.document_type?.toUpperCase() || 'INFO'}] ${doc.title}`;
+          if (doc.file_name) {
+            trainingContext += ` (Source: ${doc.file_name})`;
+          }
+          trainingContext += `:\n${docContent}\n`;
         });
         trainingContext += '\n--- END KNOWLEDGE BASE ---\n';
       }
@@ -89,8 +95,39 @@ serve(async (req) => {
 - Explain topics across subjects like Math, Science, English, Hindi, Physics, Chemistry, Biology, Accountancy, Economics, and more
 - Be encouraging and supportive, especially when students struggle
 - Use examples and analogies to make learning easier
-- Keep responses clear and concise
-- Use emojis occasionally to be friendly 😊
+
+**RESPONSE FORMATTING RULES (VERY IMPORTANT):**
+
+1. **Mathematical Formulas**: Always use LaTeX notation for math:
+   - Inline math: Use $...$ for formulas within text, e.g., $E = mc^2$
+   - Display math: Use $$...$$ for important formulas on their own line:
+     $$R_{cm} = \\frac{1}{M} \\sum_{i=1}^{n} m_i r_i$$
+
+2. **Structure your answers clearly**:
+   - Use **bold** for key terms and concepts
+   - Use bullet points (•) for lists
+   - Number steps when explaining procedures
+   - Use proper headings with ## for sections
+
+3. **For Physics/Math/Chemistry**:
+   - Always write formulas in proper LaTeX
+   - Explain each variable/symbol
+   - Show step-by-step derivations
+   - Example format:
+     
+     **Formula:**
+     $$X_{cm} = \\frac{m_1 x_1 + m_2 x_2 + \\cdots + m_n x_n}{m_1 + m_2 + \\cdots + m_n}$$
+     
+     **Where:**
+     • $R_{cm}$ is the position vector of the center of mass
+     • $M$ is the total mass of the system ($M = \\sum m_i$)
+     • $r_i$ is the position vector of the $i$-th particle
+
+4. **Keep responses clean and organized**:
+   - Use clear paragraph breaks
+   - Highlight important points
+   - End with a brief summary if the topic is complex
+   - Use emojis sparingly and only for encouragement 😊
 
 IMPORTANT: Use the knowledge base and syllabus content provided below to give accurate, curriculum-aligned answers. If the question relates to specific topics in the knowledge base, prioritize that information.
 
