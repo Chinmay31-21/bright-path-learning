@@ -92,53 +92,33 @@ const StudentsManager = () => {
     return { totalQuizzes, avgScore, chaptersCompleted, totalTimeSpent };
   };
 
-  // Delete student mutation - removes profile and related data
-  // Note: This only removes the user's data from the application tables
-  // The user can sign up again with the same email
+  // Delete student mutation - COMPLETELY removes user from auth and all data
   const deleteStudentMutation = useMutation({
     mutationFn: async (userId: string) => {
-      // Delete profile (this will cascade to related data due to foreign keys)
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .delete()
-        .eq('user_id', userId);
+      // Call the Edge Function to completely delete the user
+      const { data, error } = await supabase.functions.invoke('delete-user', {
+        body: { userId }
+      });
       
-      if (profileError) throw profileError;
-
-      // Delete user role
-      const { error: roleError } = await supabase
-        .from('user_roles')
-        .delete()
-        .eq('user_id', userId);
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
       
-      if (roleError) throw roleError;
-
-      // Delete quiz attempts
-      await supabase
-        .from('quiz_attempts')
-        .delete()
-        .eq('user_id', userId);
-
-      // Delete student progress
-      await supabase
-        .from('student_progress')
-        .delete()
-        .eq('user_id', userId);
+      return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['all-profiles'] });
       queryClient.invalidateQueries({ queryKey: ['all-quiz-attempts'] });
       queryClient.invalidateQueries({ queryKey: ['all-student-progress'] });
       toast({
-        title: "Student removed",
-        description: "The student has been removed successfully. They can sign up again if needed.",
+        title: "Student deleted",
+        description: "The student has been completely removed from the system.",
       });
     },
     onError: (error) => {
       console.error('Error deleting student:', error);
       toast({
         title: "Error",
-        description: "Failed to remove student. Please try again.",
+        description: error.message || "Failed to remove student. Please try again.",
         variant: "destructive",
       });
     }
