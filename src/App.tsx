@@ -11,7 +11,9 @@ import Courses from "./pages/Courses";
 import Auth from "./pages/Auth";
 import AdminDashboard from "./pages/admin/AdminDashboard";
 import Roadmap from "./pages/Roadmap";
-import StudentStudyHub from "./pages/StudentStudyHub"; // Import the new component
+import StudentStudyHub from "./pages/StudentStudyHub";
+import StudyMaterials from "./pages/StudyMaterials";
+import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
 
@@ -29,6 +31,7 @@ const App = () => (
             <Route path="/tests" element={<Tests />} />
             <Route path="/courses" element={<Courses />} />
             <Route path="/roadmap" element={<Roadmap />} />
+            <Route path="/study-materials" element={<StudyMaterials />} />
             <Route path="/admin" element={<AdminDashboard />} />
             <Route path="/student-study-hub" element={<StudentStudyHub />} /> {/* Add the new route */}
             <Route path="*" element={<Navigate to="/" />} /> {/* Redirect all other paths to home */}

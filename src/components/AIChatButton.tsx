@@ -1,6 +1,7 @@
 import { MessageCircle, X, Send, Sparkles, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
@@ -176,16 +177,37 @@ const AIChatButton = () => {
         </span>
       </button>
 
-      {/* Chat Window */}
-      <div
-        className={`fixed bottom-6 right-6 z-50 w-[420px] max-w-[calc(100vw-48px)] h-[650px] max-h-[calc(100vh-120px)] glass-card rounded-2xl overflow-hidden flex flex-col transition-all duration-300 shadow-xl ${
-          isOpen 
-            ? 'opacity-100 translate-y-0' 
-            : 'opacity-0 translate-y-4 pointer-events-none'
-        }`}
-      >
-        {/* Header */}
-        <div className="gradient-bg p-4 flex items-center justify-between">
+      {/* Chat Window - Rendered via Portal to avoid parent styling issues */}
+      {createPortal(
+        <div
+          className={`glass-card rounded-2xl shadow-2xl ${
+            isOpen 
+              ? 'opacity-100 visible' 
+              : 'opacity-0 invisible pointer-events-none'
+          }`}
+          style={{
+            position: 'fixed',
+            bottom: '24px',
+            right: '24px',
+            width: '380px',
+            maxWidth: 'calc(100vw - 48px)',
+            height: '520px',
+            maxHeight: 'calc(100vh - 100px)',
+            zIndex: 9999,
+            transition: 'opacity 0.3s, visibility 0.3s',
+          }}
+        >
+        {/* Header - Absolute positioned at top */}
+        <div 
+          className="gradient-bg p-4 flex items-center justify-between rounded-t-2xl"
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            height: '72px',
+          }}
+        >
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-primary-foreground/20 flex items-center justify-center">
               <Sparkles className="w-5 h-5 text-primary-foreground" />
@@ -214,8 +236,19 @@ const AIChatButton = () => {
           </div>
         </div>
 
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {/* Messages - Positioned between header and input */}
+        <div 
+          className="p-4 space-y-4 bg-background"
+          style={{
+            position: 'absolute',
+            top: '72px',
+            left: 0,
+            right: 0,
+            bottom: '80px',
+            overflowY: 'auto',
+            overflowX: 'hidden',
+          }}
+        >
           {isLoadingHistory ? (
             <div className="flex justify-center items-center h-full">
               <div className="flex gap-1.5">
@@ -231,39 +264,39 @@ const AIChatButton = () => {
                 className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
               >
                 <div
-                  className={`max-w-[90%] px-4 py-3 rounded-2xl text-sm ${
+                  className={`max-w-[85%] px-4 py-3 rounded-2xl text-sm break-words overflow-hidden ${
                     message.role === 'user'
                       ? 'gradient-bg text-primary-foreground rounded-br-md'
                       : 'bg-secondary text-foreground rounded-bl-md'
                   }`}
                 >
                   {message.role === 'assistant' ? (
-                    <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0.5 prose-headings:my-2">
+                    <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0.5 prose-headings:my-2 break-words overflow-hidden">
                       <ReactMarkdown
                         remarkPlugins={[remarkMath]}
                         rehypePlugins={[rehypeKatex]}
                         components={{
-                          p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                          p: ({ children }) => <p className="mb-2 last:mb-0 break-words">{children}</p>,
                           ul: ({ children }) => <ul className="list-disc pl-4 mb-2">{children}</ul>,
                           ol: ({ children }) => <ol className="list-decimal pl-4 mb-2">{children}</ol>,
-                          li: ({ children }) => <li className="mb-0.5">{children}</li>,
+                          li: ({ children }) => <li className="mb-0.5 break-words">{children}</li>,
                           strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
                           code: ({ children, className }) => {
                             const isInline = !className;
                             return isInline ? (
-                              <code className="bg-muted px-1 py-0.5 rounded text-xs">{children}</code>
+                              <code className="bg-muted px-1 py-0.5 rounded text-xs break-all">{children}</code>
                             ) : (
-                              <code className="block bg-muted p-2 rounded text-xs overflow-x-auto">{children}</code>
+                              <code className="block bg-muted p-2 rounded text-xs overflow-x-auto whitespace-pre-wrap break-words">{children}</code>
                             );
                           },
-                          pre: ({ children }) => <pre className="bg-muted p-3 rounded-lg overflow-x-auto my-2">{children}</pre>,
+                          pre: ({ children }) => <pre className="bg-muted p-3 rounded-lg overflow-x-auto my-2 whitespace-pre-wrap break-words">{children}</pre>,
                         }}
                       >
                         {message.content}
                       </ReactMarkdown>
                     </div>
                   ) : (
-                    <span className="whitespace-pre-wrap">{message.content}</span>
+                    <span className="whitespace-pre-wrap break-words">{message.content}</span>
                   )}
                 </div>
               </div>
@@ -283,8 +316,16 @@ const AIChatButton = () => {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input */}
-        <div className="p-4 border-t border-border">
+        {/* Input - Absolute positioned at bottom */}
+        <div 
+          className="p-4 border-t border-border bg-background rounded-b-2xl"
+          style={{
+            position: 'absolute',
+            bottom: 0,
+            left: 0,
+            right: 0,
+          }}
+        >
           {!user && (
             <p className="text-xs text-muted-foreground mb-2 text-center">
               Sign in to save your chat history
@@ -310,7 +351,9 @@ const AIChatButton = () => {
             </Button>
           </div>
         </div>
-      </div>
+      </div>,
+      document.body
+      )}
     </>
   );
 };
