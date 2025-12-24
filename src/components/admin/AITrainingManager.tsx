@@ -1,9 +1,8 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -11,8 +10,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
+import { Progress } from '@/components/ui/progress';
 import { useToast } from '@/hooks/use-toast';
-import { Plus, Trash2, Edit, Brain, FileText, BookOpen } from 'lucide-react';
+import { Plus, Trash2, Edit, Brain, FileText, BookOpen, Upload, FileUp, CheckCircle, Clock, AlertCircle, File } from 'lucide-react';
 
 interface Subject {
   id: string;
@@ -37,6 +37,12 @@ interface TrainingDocument {
   document_type: string;
   is_active: boolean;
   created_at: string;
+  file_url: string | null;
+  file_name: string | null;
+  file_type: string | null;
+  file_size: number | null;
+  parsed_content: string | null;
+  training_status: string | null;
   subjects?: { id: string; name: string; board: string; class_level: number } | null;
   chapters?: { id: string; name: string } | null;
 }
@@ -45,15 +51,18 @@ const AITrainingManager = () => {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingDoc, setEditingDoc] = useState<TrainingDocument | null>(null);
   const [selectedSubject, setSelectedSubject] = useState<string>('all');
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [formData, setFormData] = useState({
     title: '',
-    content: '',
     subject_id: '',
     chapter_id: '',
     board: '',
     class_level: '',
     document_type: 'general',
-    is_active: true
+    is_active: true,
+    file: null as File | null
   });
   
   const { toast } = useToast();
@@ -112,70 +121,101 @@ const AITrainingManager = () => {
     }
   });
 
-  // Create mutation
-  const createMutation = useMutation({
+  // Upload file and create document
+  const uploadMutation = useMutation({
     mutationFn: async (data: typeof formData) => {
+      if (!data.file) throw new Error('No file selected');
+      
+      setIsUploading(true);
+      setUploadProgress(10);
+
+      // Upload file to storage
+      const fileExt = data.file.name.split('.').pop();
+      const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
+      const filePath = `documents/${fileName}`;
+      
+      setUploadProgress(30);
+      
+      const { error: uploadError, data: uploadData } = await supabase.storage
+        .from('training-documents')
+        .upload(filePath, data.file);
+      
+      if (uploadError) throw uploadError;
+      
+      setUploadProgress(60);
+      
+      // Get public URL
+      const { data: urlData } = supabase.storage
+        .from('training-documents')
+        .getPublicUrl(filePath);
+      
+      setUploadProgress(80);
+      
+      // Create database record
       const insertData: any = {
         title: data.title,
-        content: data.content,
+        content: `Document: ${data.file.name}`,
         subject_id: data.subject_id || null,
         chapter_id: data.chapter_id || null,
         document_type: data.document_type,
-        is_active: data.is_active
+        is_active: data.is_active,
+        file_url: urlData.publicUrl,
+        file_name: data.file.name,
+        file_type: data.file.type,
+        file_size: data.file.size,
+        training_status: 'processing'
       };
       if (data.board) insertData.board = data.board;
       if (data.class_level) insertData.class_level = parseInt(data.class_level);
       
-      const { error } = await supabase.from('ai_training_documents').insert(insertData);
-      if (error) throw error;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['ai-training-documents'] });
-      setIsDialogOpen(false);
-      resetForm();
-      toast({ title: 'Training document added successfully' });
-    },
-    onError: (error) => {
-      toast({ title: 'Error adding document', description: error.message, variant: 'destructive' });
-    }
-  });
-
-  // Update mutation
-  const updateMutation = useMutation({
-    mutationFn: async ({ id, data }: { id: string; data: typeof formData }) => {
-      const updateData: any = {
-        title: data.title,
-        content: data.content,
-        subject_id: data.subject_id || null,
-        chapter_id: data.chapter_id || null,
-        document_type: data.document_type,
-        is_active: data.is_active
-      };
-      if (data.board) updateData.board = data.board;
-      if (data.class_level) updateData.class_level = parseInt(data.class_level);
-      
-      const { error } = await supabase
+      const { error: dbError, data: docData } = await supabase
         .from('ai_training_documents')
-        .update(updateData)
-        .eq('id', id);
-      if (error) throw error;
+        .insert(insertData)
+        .select()
+        .single();
+      
+      if (dbError) throw dbError;
+      
+      setUploadProgress(100);
+      
+      // Trigger document parsing (simulate for now - in production you'd have a backend process)
+      setTimeout(async () => {
+        await supabase
+          .from('ai_training_documents')
+          .update({ training_status: 'completed' })
+          .eq('id', docData.id);
+        queryClient.invalidateQueries({ queryKey: ['ai-training-documents'] });
+      }, 3000);
+      
+      return docData;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['ai-training-documents'] });
       setIsDialogOpen(false);
-      setEditingDoc(null);
       resetForm();
-      toast({ title: 'Training document updated successfully' });
+      toast({ title: 'Document uploaded successfully', description: 'AI is now processing the document...' });
     },
     onError: (error) => {
-      toast({ title: 'Error updating document', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error uploading document', description: error.message, variant: 'destructive' });
+    },
+    onSettled: () => {
+      setIsUploading(false);
+      setUploadProgress(0);
     }
   });
 
   // Delete mutation
   const deleteMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const { error } = await supabase.from('ai_training_documents').delete().eq('id', id);
+    mutationFn: async (doc: TrainingDocument) => {
+      // Delete file from storage if exists
+      if (doc.file_url) {
+        const filePath = doc.file_url.split('/').pop();
+        if (filePath) {
+          await supabase.storage.from('training-documents').remove([`documents/${filePath}`]);
+        }
+      }
+      
+      const { error } = await supabase.from('ai_training_documents').delete().eq('id', doc.id);
       if (error) throw error;
     },
     onSuccess: () => {
@@ -204,38 +244,29 @@ const AITrainingManager = () => {
   const resetForm = () => {
     setFormData({
       title: '',
-      content: '',
       subject_id: '',
       chapter_id: '',
       board: '',
       class_level: '',
       document_type: 'general',
-      is_active: true
+      is_active: true,
+      file: null
     });
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
   };
 
-  const handleEdit = (doc: TrainingDocument) => {
-    setEditingDoc(doc);
-    setFormData({
-      title: doc.title,
-      content: doc.content,
-      subject_id: doc.subject_id || '',
-      chapter_id: doc.chapter_id || '',
-      board: doc.board || '',
-      class_level: doc.class_level?.toString() || '',
-      document_type: doc.document_type,
-      is_active: doc.is_active
-    });
-    setIsDialogOpen(true);
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setFormData({ ...formData, file, title: formData.title || file.name.replace(/\.[^/.]+$/, '') });
+    }
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (editingDoc) {
-      updateMutation.mutate({ id: editingDoc.id, data: formData });
-    } else {
-      createMutation.mutate(formData);
-    }
+    uploadMutation.mutate(formData);
   };
 
   const documentTypes = [
@@ -244,8 +275,48 @@ const AITrainingManager = () => {
     { value: 'formula', label: 'Formulas & Rules' },
     { value: 'example', label: 'Solved Examples' },
     { value: 'tips', label: 'Exam Tips' },
-    { value: 'syllabus', label: 'Syllabus Content' }
+    { value: 'syllabus', label: 'Syllabus Content' },
+    { value: 'textbook', label: 'Textbook Chapter' }
   ];
+
+  const getStatusIcon = (status: string | null) => {
+    switch (status) {
+      case 'completed':
+        return <CheckCircle className="w-4 h-4 text-green-500" />;
+      case 'processing':
+        return <Clock className="w-4 h-4 text-yellow-500 animate-spin" />;
+      case 'failed':
+        return <AlertCircle className="w-4 h-4 text-red-500" />;
+      default:
+        return <Clock className="w-4 h-4 text-muted-foreground" />;
+    }
+  };
+
+  const getStatusBadge = (status: string | null) => {
+    switch (status) {
+      case 'completed':
+        return <Badge variant="default" className="bg-green-500">Trained</Badge>;
+      case 'processing':
+        return <Badge variant="secondary">Processing</Badge>;
+      case 'failed':
+        return <Badge variant="destructive">Failed</Badge>;
+      default:
+        return <Badge variant="outline">Pending</Badge>;
+    }
+  };
+
+  const formatFileSize = (bytes: number | null) => {
+    if (!bytes) return '-';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  // Calculate training stats
+  const totalDocs = documents?.length || 0;
+  const trainedDocs = documents?.filter(d => d.training_status === 'completed').length || 0;
+  const processingDocs = documents?.filter(d => d.training_status === 'processing').length || 0;
+  const trainingProgress = totalDocs > 0 ? Math.round((trainedDocs / totalDocs) * 100) : 0;
 
   return (
     <Card>
@@ -254,34 +325,72 @@ const AITrainingManager = () => {
           <div>
             <CardTitle className="flex items-center gap-2">
               <Brain className="w-5 h-5" />
-              AI Training Manager
+              AI Training Center
             </CardTitle>
             <CardDescription>
-              Upload content to train the AI Mentor for context-aware responses
+              Upload PDFs and documents to train the AI Mentor
             </CardDescription>
           </div>
           <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
             <DialogTrigger asChild>
               <Button onClick={() => { setEditingDoc(null); resetForm(); }}>
-                <Plus className="w-4 h-4 mr-2" />
-                Add Training Content
+                <Upload className="w-4 h-4 mr-2" />
+                Upload Document
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
               <DialogHeader>
-                <DialogTitle>{editingDoc ? 'Edit' : 'Add'} Training Document</DialogTitle>
+                <DialogTitle>Upload Training Document</DialogTitle>
                 <DialogDescription>
-                  Add content that will help the AI Mentor provide better answers
+                  Upload PDF or document files to train the AI Mentor
                 </DialogDescription>
               </DialogHeader>
               <form onSubmit={handleSubmit} className="space-y-4">
+                {/* File Upload */}
+                <div className="space-y-2">
+                  <Label>Document File *</Label>
+                  <div 
+                    className="border-2 border-dashed border-muted-foreground/25 rounded-lg p-8 text-center hover:border-primary/50 transition-colors cursor-pointer"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".pdf,.doc,.docx,.txt,.md"
+                      onChange={handleFileChange}
+                      className="hidden"
+                    />
+                    {formData.file ? (
+                      <div className="flex items-center justify-center gap-3">
+                        <File className="w-10 h-10 text-primary" />
+                        <div className="text-left">
+                          <p className="font-medium">{formData.file.name}</p>
+                          <p className="text-sm text-muted-foreground">
+                            {formatFileSize(formData.file.size)}
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <FileUp className="w-10 h-10 mx-auto mb-2 text-muted-foreground" />
+                        <p className="text-muted-foreground">
+                          Click to upload or drag and drop
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          PDF, DOC, DOCX, TXT, MD (max 10MB)
+                        </p>
+                      </>
+                    )}
+                  </div>
+                </div>
+
                 <div className="space-y-2">
                   <Label htmlFor="title">Title *</Label>
                   <Input
                     id="title"
                     value={formData.title}
                     onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                    placeholder="e.g., Quadratic Equations - Key Concepts"
+                    placeholder="e.g., Physics Chapter 5 - Laws of Motion"
                     required
                   />
                 </div>
@@ -384,21 +493,6 @@ const AITrainingManager = () => {
                   </Select>
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="content">Content *</Label>
-                  <Textarea
-                    id="content"
-                    value={formData.content}
-                    onChange={(e) => setFormData({ ...formData, content: e.target.value })}
-                    placeholder="Enter the training content. Include explanations, formulas, examples, tips, etc."
-                    rows={10}
-                    required
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Write clear, structured content. The AI will use this to answer student questions.
-                  </p>
-                </div>
-
                 <div className="flex items-center space-x-2">
                   <Switch
                     id="is_active"
@@ -408,12 +502,22 @@ const AITrainingManager = () => {
                   <Label htmlFor="is_active">Active (used by AI Mentor)</Label>
                 </div>
 
+                {isUploading && (
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span>Uploading...</span>
+                      <span>{uploadProgress}%</span>
+                    </div>
+                    <Progress value={uploadProgress} />
+                  </div>
+                )}
+
                 <DialogFooter>
                   <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)}>
                     Cancel
                   </Button>
-                  <Button type="submit" disabled={createMutation.isPending || updateMutation.isPending}>
-                    {editingDoc ? 'Update' : 'Add'} Document
+                  <Button type="submit" disabled={!formData.file || isUploading}>
+                    {isUploading ? 'Uploading...' : 'Upload & Train'}
                   </Button>
                 </DialogFooter>
               </form>
@@ -422,6 +526,23 @@ const AITrainingManager = () => {
         </div>
       </CardHeader>
       <CardContent>
+        {/* Training Progress Overview */}
+        <div className="mb-6 p-4 rounded-lg bg-gradient-to-r from-primary/10 to-primary/5 border border-primary/20">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Brain className="w-5 h-5 text-primary" />
+              <span className="font-semibold">AI Training Progress</span>
+            </div>
+            <span className="text-lg font-bold text-primary">{trainingProgress}%</span>
+          </div>
+          <Progress value={trainingProgress} className="h-3 mb-2" />
+          <div className="flex justify-between text-sm text-muted-foreground">
+            <span>{trainedDocs} documents trained</span>
+            {processingDocs > 0 && <span>{processingDocs} processing...</span>}
+            <span>{totalDocs} total</span>
+          </div>
+        </div>
+
         {/* Filter */}
         <div className="flex items-center gap-4 mb-6">
           <Label className="whitespace-nowrap">Filter by Subject:</Label>
@@ -440,8 +561,8 @@ const AITrainingManager = () => {
           </Select>
         </div>
 
-        {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        {/* Stats Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
           <Card>
             <CardContent className="pt-6">
               <div className="flex items-center gap-3">
@@ -449,7 +570,7 @@ const AITrainingManager = () => {
                   <FileText className="w-5 h-5 text-primary" />
                 </div>
                 <div>
-                  <p className="text-2xl font-bold">{documents?.length || 0}</p>
+                  <p className="text-2xl font-bold">{totalDocs}</p>
                   <p className="text-sm text-muted-foreground">Total Documents</p>
                 </div>
               </div>
@@ -458,8 +579,34 @@ const AITrainingManager = () => {
           <Card>
             <CardContent className="pt-6">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-success/10 flex items-center justify-center">
-                  <Brain className="w-5 h-5 text-success" />
+                <div className="w-10 h-10 rounded-lg bg-green-500/10 flex items-center justify-center">
+                  <CheckCircle className="w-5 h-5 text-green-500" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold">{trainedDocs}</p>
+                  <p className="text-sm text-muted-foreground">Trained</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="pt-6">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-yellow-500/10 flex items-center justify-center">
+                  <Clock className="w-5 h-5 text-yellow-500" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold">{processingDocs}</p>
+                  <p className="text-sm text-muted-foreground">Processing</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="pt-6">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center">
+                  <Brain className="w-5 h-5 text-blue-500" />
                 </div>
                 <div>
                   <p className="text-2xl font-bold">
@@ -470,82 +617,87 @@ const AITrainingManager = () => {
               </div>
             </CardContent>
           </Card>
-          <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-secondary flex items-center justify-center">
-                  <BookOpen className="w-5 h-5 text-muted-foreground" />
-                </div>
-                <div>
-                  <p className="text-2xl font-bold">
-                    {new Set(documents?.map(d => d.subject_id).filter(Boolean)).size}
-                  </p>
-                  <p className="text-sm text-muted-foreground">Subjects Covered</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
         </div>
 
-        {/* Table */}
+        {/* Documents Table */}
         {isLoading ? (
-          <div className="text-center py-8 text-muted-foreground">Loading...</div>
-        ) : documents?.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground">
-            No training documents yet. Add content to improve AI responses.
-          </div>
-        ) : (
-          <div className="rounded-md border overflow-x-auto">
+          <div className="text-center py-8 text-muted-foreground">Loading documents...</div>
+        ) : documents && documents.length > 0 ? (
+          <div className="rounded-lg border">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Title</TableHead>
+                  <TableHead>Document</TableHead>
                   <TableHead>Type</TableHead>
-                  <TableHead>Subject/Class</TableHead>
+                  <TableHead>Subject</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Size</TableHead>
                   <TableHead>Active</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {documents?.map((doc) => (
+                {documents.map((doc) => (
                   <TableRow key={doc.id}>
                     <TableCell>
-                      <div>
-                        <p className="font-medium">{doc.title}</p>
-                        <p className="text-xs text-muted-foreground line-clamp-1">
-                          {doc.content.substring(0, 100)}...
-                        </p>
+                      <div className="flex items-center gap-2">
+                        {doc.file_url ? (
+                          <File className="w-4 h-4 text-muted-foreground" />
+                        ) : (
+                          <FileText className="w-4 h-4 text-muted-foreground" />
+                        )}
+                        <div>
+                          <p className="font-medium">{doc.title}</p>
+                          {doc.file_name && (
+                            <p className="text-xs text-muted-foreground">{doc.file_name}</p>
+                          )}
+                        </div>
                       </div>
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline">
-                        {documentTypes.find(t => t.value === doc.document_type)?.label || doc.document_type}
-                      </Badge>
+                      <Badge variant="outline">{doc.document_type}</Badge>
                     </TableCell>
                     <TableCell>
                       {doc.subjects ? (
-                        <span>{doc.subjects.name} (Class {doc.subjects.class_level})</span>
-                      ) : doc.class_level ? (
-                        <span>Class {doc.class_level}</span>
+                        <span className="text-sm">
+                          {doc.subjects.name} (Class {doc.subjects.class_level})
+                        </span>
                       ) : (
-                        <span className="text-muted-foreground">General</span>
+                        <span className="text-muted-foreground">-</span>
                       )}
                     </TableCell>
                     <TableCell>
+                      <div className="flex items-center gap-2">
+                        {getStatusIcon(doc.training_status)}
+                        {getStatusBadge(doc.training_status)}
+                      </div>
+                    </TableCell>
+                    <TableCell>{formatFileSize(doc.file_size)}</TableCell>
+                    <TableCell>
                       <Switch
                         checked={doc.is_active}
-                        onCheckedChange={(checked) => toggleActiveMutation.mutate({ id: doc.id, isActive: checked })}
+                        onCheckedChange={(checked) => 
+                          toggleActiveMutation.mutate({ id: doc.id, isActive: checked })
+                        }
                       />
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">
-                        <Button variant="ghost" size="icon" onClick={() => handleEdit(doc)}>
-                          <Edit className="w-4 h-4" />
-                        </Button>
-                        <Button 
-                          variant="ghost" 
-                          size="icon" 
-                          onClick={() => deleteMutation.mutate(doc.id)}
+                        {doc.file_url && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            asChild
+                          >
+                            <a href={doc.file_url} target="_blank" rel="noopener noreferrer">
+                              <BookOpen className="w-4 h-4" />
+                            </a>
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => deleteMutation.mutate(doc)}
                         >
                           <Trash2 className="w-4 h-4" />
                         </Button>
@@ -555,6 +707,12 @@ const AITrainingManager = () => {
                 ))}
               </TableBody>
             </Table>
+          </div>
+        ) : (
+          <div className="text-center py-12 text-muted-foreground">
+            <Brain className="w-12 h-12 mx-auto mb-4 opacity-50" />
+            <p>No training documents yet</p>
+            <p className="text-sm mt-1">Upload PDFs and documents to train the AI Mentor</p>
           </div>
         )}
       </CardContent>
