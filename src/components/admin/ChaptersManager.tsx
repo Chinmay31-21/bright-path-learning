@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
@@ -8,8 +8,10 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
-import { Plus, Pencil, Trash2, Loader2, FileText } from 'lucide-react';
+import { useAuth } from '@/contexts/AuthContext';
+import { Plus, Pencil, Trash2, Loader2, FileText, Upload, File, Eye, X } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Badge } from '@/components/ui/badge';
 
 type EducationBoard = 'cbse' | 'icse' | 'state';
 
@@ -18,6 +20,16 @@ interface Subject {
   name: string;
   board: EducationBoard;
   class_level: number;
+}
+
+interface ChapterDocument {
+  id: string;
+  chapter_id: string;
+  file_name: string;
+  file_url: string;
+  file_size: number | null;
+  file_type: string | null;
+  created_at: string;
 }
 
 interface Chapter {
@@ -33,8 +45,11 @@ interface Chapter {
 
 const ChaptersManager = () => {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [isDocsDialogOpen, setIsDocsDialogOpen] = useState(false);
   const [editingChapter, setEditingChapter] = useState<Chapter | null>(null);
+  const [selectedChapterForDocs, setSelectedChapterForDocs] = useState<Chapter | null>(null);
   const [selectedSubject, setSelectedSubject] = useState<string>('all');
+  const [uploadingDoc, setUploadingDoc] = useState(false);
   const [formData, setFormData] = useState({
     subject_id: '',
     name: '',
@@ -43,7 +58,9 @@ const ChaptersManager = () => {
     syllabus_content: ''
   });
   
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+  const { user } = useAuth();
   const queryClient = useQueryClient();
 
   const { data: subjects } = useQuery({
@@ -74,6 +91,21 @@ const ChaptersManager = () => {
       if (error) throw error;
       return data as Chapter[];
     }
+  });
+
+  const { data: chapterDocuments, refetch: refetchDocs } = useQuery({
+    queryKey: ['chapter-documents', selectedChapterForDocs?.id],
+    queryFn: async () => {
+      if (!selectedChapterForDocs) return [];
+      const { data, error } = await supabase
+        .from('chapter_documents')
+        .select('*')
+        .eq('chapter_id', selectedChapterForDocs.id)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      return data as ChapterDocument[];
+    },
+    enabled: !!selectedChapterForDocs
   });
 
   const createMutation = useMutation({
@@ -120,6 +152,26 @@ const ChaptersManager = () => {
     }
   });
 
+  const deleteDocMutation = useMutation({
+    mutationFn: async (doc: ChapterDocument) => {
+      // Delete from storage
+      const filePath = doc.file_url.split('/chapter-documents/')[1];
+      if (filePath) {
+        await supabase.storage.from('chapter-documents').remove([filePath]);
+      }
+      // Delete from database
+      const { error } = await supabase.from('chapter_documents').delete().eq('id', doc.id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      refetchDocs();
+      toast({ title: 'Document deleted successfully' });
+    },
+    onError: (error) => {
+      toast({ title: 'Error deleting document', description: error.message, variant: 'destructive' });
+    }
+  });
+
   const resetForm = () => {
     setFormData({ subject_id: '', name: '', chapter_number: 1, description: '', syllabus_content: '' });
     setEditingChapter(null);
@@ -147,6 +199,72 @@ const ChaptersManager = () => {
     }
   };
 
+  const handleViewDocs = (chapter: Chapter) => {
+    setSelectedChapterForDocs(chapter);
+    setIsDocsDialogOpen(true);
+  };
+
+  const handleDocUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0 || !selectedChapterForDocs) return;
+
+    setUploadingDoc(true);
+    try {
+      for (const file of Array.from(files)) {
+        const fileName = `${selectedChapterForDocs.id}/${Date.now()}_${file.name}`;
+        
+        // Upload to storage
+        const { error: uploadError } = await supabase.storage
+          .from('chapter-documents')
+          .upload(fileName, file);
+        
+        if (uploadError) throw uploadError;
+
+        // Get public URL
+        const { data: urlData } = supabase.storage
+          .from('chapter-documents')
+          .getPublicUrl(fileName);
+
+        // Save to database
+        const { error: dbError } = await supabase
+          .from('chapter_documents')
+          .insert({
+            chapter_id: selectedChapterForDocs.id,
+            file_name: file.name,
+            file_url: urlData.publicUrl,
+            file_size: file.size,
+            file_type: file.type,
+            uploaded_by: user?.id
+          });
+
+        if (dbError) throw dbError;
+      }
+
+      toast({ title: 'Documents uploaded successfully' });
+      refetchDocs();
+    } catch (error: any) {
+      toast({ title: 'Error uploading documents', description: error.message, variant: 'destructive' });
+    } finally {
+      setUploadingDoc(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const formatFileSize = (bytes: number | null) => {
+    if (!bytes) return '-';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  };
+
+  const getFileIcon = (fileType: string | null) => {
+    if (fileType?.includes('pdf')) return '📄';
+    if (fileType?.includes('word') || fileType?.includes('document')) return '📝';
+    if (fileType?.includes('image')) return '🖼️';
+    if (fileType?.includes('spreadsheet') || fileType?.includes('excel')) return '📊';
+    return '📁';
+  };
+
   const isPending = createMutation.isPending || updateMutation.isPending;
 
   return (
@@ -154,7 +272,7 @@ const ChaptersManager = () => {
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
           <h2 className="text-2xl font-bold text-foreground">Chapters</h2>
-          <p className="text-muted-foreground">Manage chapters for each subject</p>
+          <p className="text-muted-foreground">Manage chapters and upload study materials</p>
         </div>
         
         <div className="flex items-center gap-4">
@@ -240,13 +358,13 @@ const ChaptersManager = () => {
                 </div>
                 
                 <div className="space-y-2">
-                  <Label htmlFor="syllabus_content">Syllabus Content (for AI training)</Label>
+                  <Label htmlFor="syllabus_content">Additional Notes (Optional)</Label>
                   <Textarea
                     id="syllabus_content"
                     value={formData.syllabus_content}
                     onChange={(e) => setFormData({ ...formData, syllabus_content: e.target.value })}
-                    placeholder="Enter detailed syllabus content, key concepts, and topics covered..."
-                    rows={6}
+                    placeholder="Any additional notes or key concepts (documents will be the primary source for AI training)"
+                    rows={3}
                   />
                 </div>
                 
@@ -277,6 +395,7 @@ const ChaptersManager = () => {
                 <TableHead>Chapter</TableHead>
                 <TableHead>Subject</TableHead>
                 <TableHead>Description</TableHead>
+                <TableHead>Documents</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -290,6 +409,12 @@ const ChaptersManager = () => {
                     {chapter.subjects?.name} (Class {chapter.subjects?.class_level})
                   </TableCell>
                   <TableCell className="max-w-xs truncate">{chapter.description || '-'}</TableCell>
+                  <TableCell>
+                    <Button variant="outline" size="sm" onClick={() => handleViewDocs(chapter)}>
+                      <File className="w-4 h-4 mr-2" />
+                      Manage
+                    </Button>
+                  </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">
                       <Button variant="ghost" size="sm" onClick={() => handleEdit(chapter)}>
@@ -321,6 +446,98 @@ const ChaptersManager = () => {
           </Button>
         </div>
       )}
+
+      {/* Documents Management Dialog */}
+      <Dialog open={isDocsDialogOpen} onOpenChange={setIsDocsDialogOpen}>
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              Documents for {selectedChapterForDocs?.name}
+            </DialogTitle>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            {/* Upload Section */}
+            <div className="border-2 border-dashed border-border rounded-lg p-6 text-center">
+              <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
+              <p className="text-sm text-muted-foreground mb-3">
+                Upload PDF, Word documents, or other study materials
+              </p>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.jpg,.jpeg,.png"
+                onChange={handleDocUpload}
+                className="hidden"
+              />
+              <Button 
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploadingDoc}
+              >
+                {uploadingDoc ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Uploading...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="w-4 h-4 mr-2" />
+                    Select Files
+                  </>
+                )}
+              </Button>
+            </div>
+
+            {/* Documents List */}
+            {chapterDocuments && chapterDocuments.length > 0 ? (
+              <div className="space-y-2">
+                <h4 className="font-medium text-foreground">Uploaded Documents</h4>
+                <div className="space-y-2">
+                  {chapterDocuments.map((doc) => (
+                    <div 
+                      key={doc.id}
+                      className="flex items-center justify-between p-3 bg-muted/50 rounded-lg"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="text-xl">{getFileIcon(doc.file_type)}</span>
+                        <div>
+                          <p className="font-medium text-sm">{doc.file_name}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {formatFileSize(doc.file_size)} • {new Date(doc.created_at).toLocaleDateString()}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={() => window.open(doc.file_url, '_blank')}
+                        >
+                          <Eye className="w-4 h-4" />
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={() => deleteDocMutation.mutate(doc)}
+                          disabled={deleteDocMutation.isPending}
+                        >
+                          <Trash2 className="w-4 h-4 text-destructive" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-6 text-muted-foreground">
+                <File className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                <p>No documents uploaded yet</p>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

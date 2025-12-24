@@ -92,6 +92,47 @@ export type Database = {
           },
         ]
       }
+      chapter_documents: {
+        Row: {
+          chapter_id: string
+          created_at: string
+          file_name: string
+          file_size: number | null
+          file_type: string | null
+          file_url: string
+          id: string
+          uploaded_by: string | null
+        }
+        Insert: {
+          chapter_id: string
+          created_at?: string
+          file_name: string
+          file_size?: number | null
+          file_type?: string | null
+          file_url: string
+          id?: string
+          uploaded_by?: string | null
+        }
+        Update: {
+          chapter_id?: string
+          created_at?: string
+          file_name?: string
+          file_size?: number | null
+          file_type?: string | null
+          file_url?: string
+          id?: string
+          uploaded_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "chapter_documents_chapter_id_fkey"
+            columns: ["chapter_id"]
+            isOneToOne: false
+            referencedRelation: "chapters"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       chapters: {
         Row: {
           chapter_number: number
@@ -511,6 +552,7 @@ export type Database = {
           thumbnail_url: string | null
           title: string
           uploaded_by: string | null
+          video_type: string | null
           video_url: string
         }
         Insert: {
@@ -522,6 +564,7 @@ export type Database = {
           thumbnail_url?: string | null
           title: string
           uploaded_by?: string | null
+          video_type?: string | null
           video_url: string
         }
         Update: {
@@ -533,6 +576,7 @@ export type Database = {
           thumbnail_url?: string | null
           title?: string
           uploaded_by?: string | null
+          video_type?: string | null
           video_url?: string
         }
         Relationships: [

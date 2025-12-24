@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
@@ -7,10 +7,13 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
-import { Plus, Pencil, Trash2, Loader2, Video, Play } from 'lucide-react';
+import { Plus, Pencil, Trash2, Loader2, Video, Play, Upload, Link } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
 
 type EducationBoard = 'cbse' | 'icse' | 'state';
 
@@ -39,6 +42,7 @@ interface VideoItem {
   thumbnail_url: string | null;
   uploaded_by: string | null;
   created_at: string;
+  video_type: string | null;
   chapters?: Chapter;
 }
 
@@ -46,15 +50,20 @@ const VideosManager = () => {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingVideo, setEditingVideo] = useState<VideoItem | null>(null);
   const [selectedSubject, setSelectedSubject] = useState<string>('all');
+  const [uploadType, setUploadType] = useState<'link' | 'upload'>('link');
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [isUploading, setIsUploading] = useState(false);
   const [formData, setFormData] = useState({
     chapter_id: '',
     title: '',
     description: '',
     video_url: '',
     duration_seconds: 0,
-    thumbnail_url: ''
+    thumbnail_url: '',
+    video_type: 'link'
   });
   
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const { user } = useAuth();
   const queryClient = useQueryClient();
@@ -90,7 +99,7 @@ const VideosManager = () => {
   const { data: videos, isLoading } = useQuery({
     queryKey: ['videos', selectedSubject],
     queryFn: async () => {
-      let query = supabase
+      const query = supabase
         .from('videos')
         .select('*, chapters(id, name, chapter_number, subject_id, subjects(id, name, class_level))')
         .order('created_at', { ascending: false });
@@ -137,8 +146,15 @@ const VideosManager = () => {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const { error } = await supabase.from('videos').delete().eq('id', id);
+    mutationFn: async (video: VideoItem) => {
+      // If it's an uploaded video, delete from storage first
+      if (video.video_type === 'upload') {
+        const filePath = video.video_url.split('/chapter-videos/')[1];
+        if (filePath) {
+          await supabase.storage.from('chapter-videos').remove([filePath]);
+        }
+      }
+      const { error } = await supabase.from('videos').delete().eq('id', video.id);
       if (error) throw error;
     },
     onSuccess: () => {
@@ -151,9 +167,11 @@ const VideosManager = () => {
   });
 
   const resetForm = () => {
-    setFormData({ chapter_id: '', title: '', description: '', video_url: '', duration_seconds: 0, thumbnail_url: '' });
+    setFormData({ chapter_id: '', title: '', description: '', video_url: '', duration_seconds: 0, thumbnail_url: '', video_type: 'link' });
     setEditingVideo(null);
     setIsDialogOpen(false);
+    setUploadType('link');
+    setUploadProgress(0);
   };
 
   const handleEdit = (video: VideoItem) => {
@@ -164,17 +182,70 @@ const VideosManager = () => {
       description: video.description || '',
       video_url: video.video_url,
       duration_seconds: video.duration_seconds || 0,
-      thumbnail_url: video.thumbnail_url || ''
+      thumbnail_url: video.thumbnail_url || '',
+      video_type: video.video_type || 'link'
     });
+    setUploadType((video.video_type as 'link' | 'upload') || 'link');
     setIsDialogOpen(true);
+  };
+
+  const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !formData.chapter_id) {
+      toast({ title: 'Please select a chapter first', variant: 'destructive' });
+      return;
+    }
+
+    setIsUploading(true);
+    setUploadProgress(10);
+
+    try {
+      const fileName = `${formData.chapter_id}/${Date.now()}_${file.name}`;
+      
+      // Simulate progress (Supabase doesn't provide upload progress)
+      const progressInterval = setInterval(() => {
+        setUploadProgress(prev => Math.min(prev + 10, 90));
+      }, 500);
+
+      const { error: uploadError } = await supabase.storage
+        .from('chapter-videos')
+        .upload(fileName, file);
+
+      clearInterval(progressInterval);
+
+      if (uploadError) throw uploadError;
+
+      const { data: urlData } = supabase.storage
+        .from('chapter-videos')
+        .getPublicUrl(fileName);
+
+      setFormData(prev => ({
+        ...prev,
+        video_url: urlData.publicUrl,
+        video_type: 'upload'
+      }));
+
+      setUploadProgress(100);
+      toast({ title: 'Video uploaded successfully' });
+    } catch (error: any) {
+      toast({ title: 'Error uploading video', description: error.message, variant: 'destructive' });
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const submitData = {
+      ...formData,
+      video_type: uploadType
+    };
+    
     if (editingVideo) {
-      updateMutation.mutate({ id: editingVideo.id, data: formData });
+      updateMutation.mutate({ id: editingVideo.id, data: submitData });
     } else {
-      createMutation.mutate({ ...formData, uploaded_by: user?.id });
+      createMutation.mutate({ ...submitData, uploaded_by: user?.id });
     }
   };
 
@@ -251,17 +322,101 @@ const VideosManager = () => {
                     required
                   />
                 </div>
-                
-                <div className="space-y-2">
-                  <Label htmlFor="video_url">Video URL *</Label>
-                  <Input
-                    id="video_url"
-                    value={formData.video_url}
-                    onChange={(e) => setFormData({ ...formData, video_url: e.target.value })}
-                    placeholder="https://youtube.com/watch?v=... or direct video URL"
-                    required
-                  />
-                </div>
+
+                {/* Video Source Tabs */}
+                <Tabs value={uploadType} onValueChange={(v) => setUploadType(v as 'link' | 'upload')}>
+                  <TabsList className="grid w-full grid-cols-2">
+                    <TabsTrigger value="link" className="flex items-center gap-2">
+                      <Link className="w-4 h-4" />
+                      Video Link
+                    </TabsTrigger>
+                    <TabsTrigger value="upload" className="flex items-center gap-2">
+                      <Upload className="w-4 h-4" />
+                      Upload Video
+                    </TabsTrigger>
+                  </TabsList>
+                  
+                  <TabsContent value="link" className="space-y-2">
+                    <Label htmlFor="video_url">Video URL *</Label>
+                    <Input
+                      id="video_url"
+                      value={formData.video_url}
+                      onChange={(e) => setFormData({ ...formData, video_url: e.target.value, video_type: 'link' })}
+                      placeholder="https://youtube.com/watch?v=... or direct video URL"
+                      required={uploadType === 'link'}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Supports YouTube, Vimeo, or direct video URLs
+                    </p>
+                  </TabsContent>
+                  
+                  <TabsContent value="upload" className="space-y-4">
+                    {formData.video_url && uploadType === 'upload' ? (
+                      <div className="p-4 bg-muted/50 rounded-lg">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Video className="w-5 h-5 text-primary" />
+                            <span className="text-sm font-medium">Video uploaded</span>
+                          </div>
+                          <Button 
+                            type="button" 
+                            variant="outline" 
+                            size="sm"
+                            onClick={() => setFormData({ ...formData, video_url: '' })}
+                          >
+                            Replace
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="border-2 border-dashed border-border rounded-lg p-6 text-center">
+                        <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
+                        <p className="text-sm text-muted-foreground mb-3">
+                          Upload video file (MP4, WebM, MOV)
+                        </p>
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          accept="video/*"
+                          onChange={handleVideoUpload}
+                          className="hidden"
+                          disabled={!formData.chapter_id}
+                        />
+                        <Button 
+                          type="button"
+                          variant="outline"
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={isUploading || !formData.chapter_id}
+                        >
+                          {isUploading ? (
+                            <>
+                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              Uploading...
+                            </>
+                          ) : (
+                            <>
+                              <Upload className="w-4 h-4 mr-2" />
+                              Select Video
+                            </>
+                          )}
+                        </Button>
+                        {!formData.chapter_id && (
+                          <p className="text-xs text-destructive mt-2">
+                            Please select a chapter first
+                          </p>
+                        )}
+                        {isUploading && (
+                          <div className="mt-4">
+                            <Progress value={uploadProgress} className="h-2" />
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {uploadProgress}% uploaded
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </TabsContent>
+                </Tabs>
                 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
@@ -301,7 +456,10 @@ const VideosManager = () => {
                   <Button type="button" variant="outline" onClick={resetForm}>
                     Cancel
                   </Button>
-                  <Button type="submit" disabled={isPending || !formData.chapter_id}>
+                  <Button 
+                    type="submit" 
+                    disabled={isPending || !formData.chapter_id || !formData.video_url}
+                  >
                     {isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                     {editingVideo ? 'Update' : 'Add'}
                   </Button>
@@ -323,6 +481,7 @@ const VideosManager = () => {
               <TableRow>
                 <TableHead>Video</TableHead>
                 <TableHead>Chapter</TableHead>
+                <TableHead>Type</TableHead>
                 <TableHead>Duration</TableHead>
                 <TableHead>Added</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
@@ -346,6 +505,11 @@ const VideosManager = () => {
                   <TableCell>
                     {video.chapters?.subjects?.name} - Ch. {video.chapters?.chapter_number}
                   </TableCell>
+                  <TableCell>
+                    <Badge variant={video.video_type === 'upload' ? 'default' : 'secondary'}>
+                      {video.video_type === 'upload' ? 'Uploaded' : 'Link'}
+                    </Badge>
+                  </TableCell>
                   <TableCell>{formatDuration(video.duration_seconds)}</TableCell>
                   <TableCell>{new Date(video.created_at).toLocaleDateString()}</TableCell>
                   <TableCell className="text-right">
@@ -356,7 +520,7 @@ const VideosManager = () => {
                       <Button 
                         variant="ghost" 
                         size="sm" 
-                        onClick={() => deleteMutation.mutate(video.id)}
+                        onClick={() => deleteMutation.mutate(video)}
                         disabled={deleteMutation.isPending}
                       >
                         <Trash2 className="w-4 h-4 text-destructive" />
