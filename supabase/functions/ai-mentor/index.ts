@@ -60,6 +60,31 @@ serve(async (req) => {
       console.error('Error fetching training documents:', error);
     }
 
+    // Fetch chapter documents content for context
+    let chapterDocsContext = '';
+    try {
+      const { data: chapterDocs } = await supabase
+        .from('chapter_documents')
+        .select(`
+          id, file_name, file_url, file_type,
+          chapters!inner(id, name, chapter_number, syllabus_content,
+            subjects!inner(id, name, class_level, board)
+          )
+        `)
+        .limit(30);
+
+      if (chapterDocs && chapterDocs.length > 0) {
+        chapterDocsContext = '\n\n--- CHAPTER MATERIALS ---\n';
+        chapterDocs.forEach((doc: any) => {
+          chapterDocsContext += `\n[Document] ${doc.file_name} - Chapter: ${doc.chapters?.name} (${doc.chapters?.subjects?.name})`;
+          chapterDocsContext += `\nFile URL: ${doc.file_url}\n`;
+        });
+        chapterDocsContext += '\n--- END CHAPTER MATERIALS ---\n';
+      }
+    } catch (error) {
+      console.error('Error fetching chapter documents:', error);
+    }
+
     // Also fetch syllabus content if available
     let syllabusContext = '';
     try {
@@ -71,7 +96,7 @@ serve(async (req) => {
 
       if (chapters && chapters.length > 0) {
         syllabusContext = '\n\n--- SYLLABUS CONTENT ---\n';
-        chapters.forEach(ch => {
+        chapters.forEach((ch: any) => {
           if (ch.syllabus_content) {
             syllabusContext += `\n${ch.name}: ${ch.syllabus_content}\n`;
           }
