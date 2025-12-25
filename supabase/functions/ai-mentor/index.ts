@@ -13,11 +13,16 @@ serve(async (req) => {
 
   try {
     const { messages, context } = await req.json();
+    
+    // Try GEMINI_API_KEY first, then fall back to LOVABLE_API_KEY for backward compatibility
+    const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
     const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
     
-    if (!LOVABLE_API_KEY) {
-      throw new Error('LOVABLE_API_KEY is not configured');
+    if (!GEMINI_API_KEY && !LOVABLE_API_KEY) {
+      throw new Error('GEMINI_API_KEY is not configured. Please set it in Supabase secrets.');
     }
+    
+    const useGeminiDirect = !!GEMINI_API_KEY;
 
     // Initialize Supabase client to fetch training documents
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
@@ -162,41 +167,115 @@ ${syllabusContext}
 Always maintain a positive, patient, and helpful tone. If a student is struggling, encourage them and break down the problem into smaller steps. Reference specific formulas, rules, or concepts from the knowledge base when relevant.`
     };
 
-    const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${LOVABLE_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
-        messages: [systemMessage, ...messages],
-      }),
-    });
+    let generatedText: string;
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Lovable AI error:', response.status, errorText);
-      if (response.status === 429) {
-        return new Response(JSON.stringify({ error: 'Rate limit exceeded. Please try again later.' }), {
-          status: 429,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    if (useGeminiDirect) {
+      // Use Google Gemini API directly
+      console.log('Using Google Gemini API directly');
+      
+      // Convert messages to Gemini format
+      const geminiContents = [];
+      
+      // Add system instruction as first user message context
+      geminiContents.push({
+        role: 'user',
+        parts: [{ text: systemMessage.content + '\n\nNow respond to the following conversation:' }]
+      });
+      geminiContents.push({
+        role: 'model',
+        parts: [{ text: 'I understand. I will act as an AI Mentor for Indian education board students, following all the formatting rules and using the knowledge base provided. How can I help you today?' }]
+      });
+      
+      // Add conversation messages
+      for (const msg of messages) {
+        geminiContents.push({
+          role: msg.role === 'user' ? 'user' : 'model',
+          parts: [{ text: msg.content }]
         });
       }
-      if (response.status === 402) {
-        return new Response(JSON.stringify({ error: 'AI credits exhausted. Please try again later.' }), {
-          status: 402,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
+
+      const geminiResponse = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            contents: geminiContents,
+            generationConfig: {
+              temperature: 0.7,
+              topK: 40,
+              topP: 0.95,
+              maxOutputTokens: 8192,
+            },
+            safetySettings: [
+              { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+              { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+              { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+              { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+            ],
+          }),
+        }
+      );
+
+      if (!geminiResponse.ok) {
+        const errorText = await geminiResponse.text();
+        console.error('Gemini API error:', geminiResponse.status, errorText);
+        if (geminiResponse.status === 429) {
+          return new Response(JSON.stringify({ error: 'Rate limit exceeded. Please try again later.' }), {
+            status: 429,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+        throw new Error(`Gemini API error: ${geminiResponse.status} - ${errorText}`);
       }
-      throw new Error(`Lovable AI error: ${response.status}`);
+
+      const geminiData = await geminiResponse.json();
+      console.log('Gemini response received successfully');
+      
+      generatedText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || 
+        "I'm sorry, I couldn't generate a response. Please try again.";
+    } else {
+      // Use Lovable AI Gateway (backward compatibility)
+      console.log('Using Lovable AI Gateway');
+      
+      const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${LOVABLE_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'google/gemini-2.5-flash',
+          messages: [systemMessage, ...messages],
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Lovable AI error:', response.status, errorText);
+        if (response.status === 429) {
+          return new Response(JSON.stringify({ error: 'Rate limit exceeded. Please try again later.' }), {
+            status: 429,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+        if (response.status === 402) {
+          return new Response(JSON.stringify({ error: 'AI credits exhausted. Please try again later.' }), {
+            status: 402,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+        throw new Error(`Lovable AI error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      console.log('AI response received successfully');
+      
+      generatedText = data.choices?.[0]?.message?.content || 
+        "I'm sorry, I couldn't generate a response. Please try again.";
     }
-
-    const data = await response.json();
-    console.log('AI response received successfully');
-    
-    const generatedText = data.choices?.[0]?.message?.content || 
-      "I'm sorry, I couldn't generate a response. Please try again.";
 
     return new Response(JSON.stringify({ response: generatedText }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
