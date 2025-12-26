@@ -8,3 +8,6 @@ verify_jwt = false
 
 [functions.delete-user]
 verify_jwt = true
+
+[functions.generate-test]
+verify_jwt = false
