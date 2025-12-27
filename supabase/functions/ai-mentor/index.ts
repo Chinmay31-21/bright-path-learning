@@ -6,6 +6,15 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+// Provider priority: Hugging Face (free) -> Gemini -> Lovable (fallback)
+type AIProvider = 'huggingface' | 'gemini' | 'lovable';
+
+interface ProviderConfig {
+  name: AIProvider;
+  apiKey: string;
+  available: boolean;
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -14,15 +23,22 @@ serve(async (req) => {
   try {
     const { messages, context } = await req.json();
     
-    // Try GEMINI_API_KEY first, then fall back to LOVABLE_API_KEY for backward compatibility
+    // Check available API keys - priority order: Hugging Face > Gemini > Lovable
+    const HUGGINGFACE_API_KEY = Deno.env.get('HUGGINGFACE_API_KEY');
     const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
     const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
     
-    if (!GEMINI_API_KEY && !LOVABLE_API_KEY) {
-      throw new Error('GEMINI_API_KEY is not configured. Please set it in Supabase Edge Function Secrets.');
-    }
+    const providers: ProviderConfig[] = [
+      { name: 'huggingface', apiKey: HUGGINGFACE_API_KEY || '', available: !!HUGGINGFACE_API_KEY },
+      { name: 'gemini', apiKey: GEMINI_API_KEY || '', available: !!GEMINI_API_KEY },
+      { name: 'lovable', apiKey: LOVABLE_API_KEY || '', available: !!LOVABLE_API_KEY },
+    ];
     
-    const useGeminiDirect = !!GEMINI_API_KEY;
+    const availableProviders = providers.filter(p => p.available);
+    
+    if (availableProviders.length === 0) {
+      throw new Error('No AI provider configured. Please set HUGGINGFACE_API_KEY (recommended - free), GEMINI_API_KEY, or LOVABLE_API_KEY in Supabase Edge Function Secrets.');
+    }
 
     // Initialize Supabase client to fetch training documents
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
@@ -37,9 +53,8 @@ serve(async (req) => {
         .select('title, content, document_type, board, class_level, file_name, parsed_content')
         .eq('is_active', true)
         .eq('training_status', 'completed')
-        .limit(20);
+        .limit(10); // Reduced limit for Hugging Face context limits
 
-      // If context is provided, filter by board/class
       if (context?.board) {
         query = query.or(`board.eq.${context.board},board.is.null`);
       }
@@ -52,7 +67,7 @@ serve(async (req) => {
       if (trainingDocs && trainingDocs.length > 0) {
         trainingContext = '\n\n--- KNOWLEDGE BASE ---\n';
         trainingDocs.forEach(doc => {
-          const docContent = doc.parsed_content || doc.content;
+          const docContent = (doc.parsed_content || doc.content || '').slice(0, 500); // Truncate for context limits
           trainingContext += `\n[${doc.document_type?.toUpperCase() || 'INFO'}] ${doc.title}`;
           if (doc.file_name) {
             trainingContext += ` (Source: ${doc.file_name})`;
@@ -65,45 +80,20 @@ serve(async (req) => {
       console.error('Error fetching training documents:', error);
     }
 
-    // Fetch chapter documents content for context
-    let chapterDocsContext = '';
-    try {
-      const { data: chapterDocs } = await supabase
-        .from('chapter_documents')
-        .select(`
-          id, file_name, file_url, file_type,
-          chapters!inner(id, name, chapter_number, syllabus_content,
-            subjects!inner(id, name, class_level, board)
-          )
-        `)
-        .limit(30);
-
-      if (chapterDocs && chapterDocs.length > 0) {
-        chapterDocsContext = '\n\n--- CHAPTER MATERIALS ---\n';
-        chapterDocs.forEach((doc: any) => {
-          chapterDocsContext += `\n[Document] ${doc.file_name} - Chapter: ${doc.chapters?.name} (${doc.chapters?.subjects?.name})`;
-          chapterDocsContext += `\nFile URL: ${doc.file_url}\n`;
-        });
-        chapterDocsContext += '\n--- END CHAPTER MATERIALS ---\n';
-      }
-    } catch (error) {
-      console.error('Error fetching chapter documents:', error);
-    }
-
-    // Also fetch syllabus content if available
+    // Fetch syllabus content if available
     let syllabusContext = '';
     try {
       const { data: chapters } = await supabase
         .from('chapters')
         .select('name, syllabus_content, description')
         .not('syllabus_content', 'is', null)
-        .limit(10);
+        .limit(5);
 
       if (chapters && chapters.length > 0) {
         syllabusContext = '\n\n--- SYLLABUS CONTENT ---\n';
         chapters.forEach((ch: any) => {
           if (ch.syllabus_content) {
-            syllabusContext += `\n${ch.name}: ${ch.syllabus_content}\n`;
+            syllabusContext += `\n${ch.name}: ${ch.syllabus_content.slice(0, 200)}\n`;
           }
         });
         syllabusContext += '\n--- END SYLLABUS ---\n';
@@ -113,12 +103,9 @@ serve(async (req) => {
     }
 
     console.log('Processing AI mentor request with', messages.length, 'messages');
-    console.log('Training context length:', trainingContext.length);
-    console.log('Syllabus context length:', syllabusContext.length);
+    console.log('Available providers:', availableProviders.map(p => p.name).join(', '));
 
-    const systemMessage = {
-      role: 'system',
-      content: `You are an AI Mentor for students studying under Indian education boards (CBSE, ICSE, State Boards). Your role is to:
+    const systemPrompt = `You are an AI Mentor for students studying under Indian education boards (CBSE, ICSE, State Boards). Your role is to:
 - Help students understand difficult concepts in a simple, friendly way
 - Provide step-by-step solutions to problems
 - Give exam tips, study strategies, and motivation
@@ -126,155 +113,43 @@ serve(async (req) => {
 - Be encouraging and supportive, especially when students struggle
 - Use examples and analogies to make learning easier
 
-**RESPONSE FORMATTING RULES (VERY IMPORTANT):**
-
-1. **Mathematical Formulas**: Always use LaTeX notation for math:
-   - Inline math: Use $...$ for formulas within text, e.g., $E = mc^2$
-   - Display math: Use $$...$$ for important formulas on their own line:
-     $$R_{cm} = \\frac{1}{M} \\sum_{i=1}^{n} m_i r_i$$
-
-2. **Structure your answers clearly**:
-   - Use **bold** for key terms and concepts
-   - Use bullet points (•) for lists
-   - Number steps when explaining procedures
-   - Use proper headings with ## for sections
-
-3. **For Physics/Math/Chemistry**:
-   - Always write formulas in proper LaTeX
-   - Explain each variable/symbol
-   - Show step-by-step derivations
-   - Example format:
-     
-     **Formula:**
-     $$X_{cm} = \\frac{m_1 x_1 + m_2 x_2 + \\cdots + m_n x_n}{m_1 + m_2 + \\cdots + m_n}$$
-     
-     **Where:**
-     • $R_{cm}$ is the position vector of the center of mass
-     • $M$ is the total mass of the system ($M = \\sum m_i$)
-     • $r_i$ is the position vector of the $i$-th particle
-
-4. **Keep responses clean and organized**:
-   - Use clear paragraph breaks
-   - Highlight important points
-   - End with a brief summary if the topic is complex
-   - Use emojis sparingly and only for encouragement 😊
-
-IMPORTANT: Use the knowledge base and syllabus content provided below to give accurate, curriculum-aligned answers. If the question relates to specific topics in the knowledge base, prioritize that information.
+**RESPONSE FORMATTING RULES:**
+1. Use **bold** for key terms
+2. Use bullet points for lists
+3. For math formulas, use LaTeX: $E = mc^2$ or $$\\frac{a}{b}$$
+4. Number steps when explaining procedures
+5. Keep responses organized and clear
 
 ${trainingContext}
 ${syllabusContext}
 
-Always maintain a positive, patient, and helpful tone. If a student is struggling, encourage them and break down the problem into smaller steps. Reference specific formulas, rules, or concepts from the knowledge base when relevant.`
-    };
+Always maintain a positive, patient, and helpful tone.`;
 
-    let generatedText: string;
+    // Try providers in order until one succeeds
+    let generatedText: string | null = null;
+    let lastError: Error | null = null;
 
-    if (useGeminiDirect) {
-      // Use Google Gemini API directly
-      console.log('Using Google Gemini API directly');
-      
-      // Convert messages to Gemini format
-      const geminiContents = [];
-      
-      // Add system instruction as first user message context
-      geminiContents.push({
-        role: 'user',
-        parts: [{ text: systemMessage.content + '\n\nNow respond to the following conversation:' }]
-      });
-      geminiContents.push({
-        role: 'model',
-        parts: [{ text: 'I understand. I will act as an AI Mentor for Indian education board students, following all the formatting rules and using the knowledge base provided. How can I help you today?' }]
-      });
-      
-      // Add conversation messages
-      for (const msg of messages) {
-        geminiContents.push({
-          role: msg.role === 'user' ? 'user' : 'model',
-          parts: [{ text: msg.content }]
+    for (const provider of availableProviders) {
+      try {
+        console.log(`Trying provider: ${provider.name}`);
+        generatedText = await callProvider(provider, systemPrompt, messages);
+        console.log(`${provider.name} response received successfully`);
+        break;
+      } catch (error) {
+        console.error(`${provider.name} failed:`, error);
+        lastError = error instanceof Error ? error : new Error(String(error));
+        continue; // Try next provider
+      }
+    }
+
+    if (!generatedText) {
+      if (lastError?.message.includes('rate limit')) {
+        return new Response(JSON.stringify({ error: 'Rate limit exceeded. Please try again later.' }), {
+          status: 429,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
-
-      const geminiResponse = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            contents: geminiContents,
-            generationConfig: {
-              temperature: 0.7,
-              topK: 40,
-              topP: 0.95,
-              maxOutputTokens: 8192,
-            },
-            safetySettings: [
-              { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
-              { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
-              { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
-              { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
-            ],
-          }),
-        }
-      );
-
-      if (!geminiResponse.ok) {
-        const errorText = await geminiResponse.text();
-        console.error('Gemini API error:', geminiResponse.status, errorText);
-        if (geminiResponse.status === 429) {
-          return new Response(JSON.stringify({ error: 'Rate limit exceeded. Please try again later.' }), {
-            status: 429,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          });
-        }
-        throw new Error(`Gemini API error: ${geminiResponse.status} - ${errorText}`);
-      }
-
-      const geminiData = await geminiResponse.json();
-      console.log('Gemini response received successfully');
-      
-      generatedText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || 
-        "I'm sorry, I couldn't generate a response. Please try again.";
-    } else {
-      // Use Lovable AI Gateway (backward compatibility)
-      console.log('Using Lovable AI Gateway');
-      
-      const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${LOVABLE_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'google/gemini-2.5-flash',
-          messages: [systemMessage, ...messages],
-        }),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Lovable AI error:', response.status, errorText);
-        if (response.status === 429) {
-          return new Response(JSON.stringify({ error: 'Rate limit exceeded. Please try again later.' }), {
-            status: 429,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          });
-        }
-        if (response.status === 402) {
-          return new Response(JSON.stringify({ error: 'AI credits exhausted. Please try again later.' }), {
-            status: 402,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          });
-        }
-        throw new Error(`Lovable AI error: ${response.status}`);
-      }
-
-      const data = await response.json();
-      console.log('AI response received successfully');
-      
-      generatedText = data.choices?.[0]?.message?.content || 
-        "I'm sorry, I couldn't generate a response. Please try again.";
+      throw lastError || new Error('All AI providers failed');
     }
 
     return new Response(JSON.stringify({ response: generatedText }), {
@@ -291,3 +166,185 @@ Always maintain a positive, patient, and helpful tone. If a student is strugglin
     });
   }
 });
+
+async function callProvider(
+  provider: ProviderConfig, 
+  systemPrompt: string, 
+  messages: Array<{ role: string; content: string }>
+): Promise<string> {
+  switch (provider.name) {
+    case 'huggingface':
+      return callHuggingFace(provider.apiKey, systemPrompt, messages);
+    case 'gemini':
+      return callGemini(provider.apiKey, systemPrompt, messages);
+    case 'lovable':
+      return callLovable(provider.apiKey, systemPrompt, messages);
+    default:
+      throw new Error(`Unknown provider: ${provider.name}`);
+  }
+}
+
+// Hugging Face Inference API (FREE)
+async function callHuggingFace(
+  apiKey: string, 
+  systemPrompt: string, 
+  messages: Array<{ role: string; content: string }>
+): Promise<string> {
+  // Use Mistral-7B-Instruct - great free model for education
+  const model = 'mistralai/Mistral-7B-Instruct-v0.3';
+  
+  // Build conversation in Mistral instruction format
+  let prompt = `<s>[INST] ${systemPrompt}\n\n`;
+  
+  // Add conversation history
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role === 'user') {
+      if (i > 0) prompt += '[INST] ';
+      prompt += `${msg.content} [/INST]`;
+    } else {
+      prompt += ` ${msg.content}</s>`;
+      if (i < messages.length - 1) prompt += '<s>';
+    }
+  }
+  
+  // If last message was user, model should respond
+  if (messages[messages.length - 1]?.role !== 'assistant') {
+    // Response will be generated
+  }
+
+  const response = await fetch(
+    `https://api-inference.huggingface.co/models/${model}`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        inputs: prompt,
+        parameters: {
+          max_new_tokens: 1024,
+          temperature: 0.7,
+          top_p: 0.95,
+          do_sample: true,
+          return_full_text: false,
+        },
+        options: {
+          wait_for_model: true,
+        }
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Hugging Face API error:', response.status, errorText);
+    
+    if (response.status === 429) {
+      throw new Error('Hugging Face rate limit exceeded');
+    }
+    if (response.status === 503) {
+      // Model loading, retry
+      throw new Error('Model is loading, please try again');
+    }
+    throw new Error(`Hugging Face API error: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json();
+  
+  // Handle different response formats
+  let text = '';
+  if (Array.isArray(data)) {
+    text = data[0]?.generated_text || '';
+  } else if (data.generated_text) {
+    text = data.generated_text;
+  } else if (typeof data === 'string') {
+    text = data;
+  }
+  
+  // Clean up the response
+  text = text.trim();
+  if (!text) {
+    throw new Error('Empty response from Hugging Face');
+  }
+  
+  return text;
+}
+
+// Google Gemini API
+async function callGemini(
+  apiKey: string, 
+  systemPrompt: string, 
+  messages: Array<{ role: string; content: string }>
+): Promise<string> {
+  const geminiContents = [];
+  
+  geminiContents.push({
+    role: 'user',
+    parts: [{ text: systemPrompt + '\n\nNow respond to the following conversation:' }]
+  });
+  geminiContents.push({
+    role: 'model',
+    parts: [{ text: 'I understand. I will act as an AI Mentor. How can I help you today?' }]
+  });
+  
+  for (const msg of messages) {
+    geminiContents.push({
+      role: msg.role === 'user' ? 'user' : 'model',
+      parts: [{ text: msg.content }]
+    });
+  }
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: geminiContents,
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 4096,
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    if (response.status === 429) throw new Error('Gemini rate limit exceeded');
+    throw new Error(`Gemini API error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, I couldn't generate a response.";
+}
+
+// Lovable AI Gateway (fallback)
+async function callLovable(
+  apiKey: string, 
+  systemPrompt: string, 
+  messages: Array<{ role: string; content: string }>
+): Promise<string> {
+  const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'google/gemini-2.5-flash',
+      messages: [{ role: 'system', content: systemPrompt }, ...messages],
+    }),
+  });
+
+  if (!response.ok) {
+    if (response.status === 429) throw new Error('Lovable rate limit exceeded');
+    if (response.status === 402) throw new Error('Lovable AI credits exhausted');
+    throw new Error(`Lovable AI error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content || "Sorry, I couldn't generate a response.";
+}
