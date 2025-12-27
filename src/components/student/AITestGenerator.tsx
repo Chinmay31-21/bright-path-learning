@@ -108,19 +108,16 @@ const AITestGenerator = () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) throw new Error('Not authenticated');
 
-      const response = await supabase.functions.invoke('generate-test', {
+      const { data, error } = await supabase.functions.invoke('generate-test', {
         body: {
           chapterId: selectedChapter,
           numQuestions: parseInt(numQuestions),
           difficulty,
         },
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-        },
       });
 
-      if (response.error) throw response.error;
-      return response.data;
+      if (error) throw error;
+      return data;
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['quizzes'] });
@@ -161,7 +158,7 @@ const AITestGenerator = () => {
     }
 
     setIsGenerating(true);
-    generateTestMutation.mutate();
+    await generateTestMutation.mutateAsync();
   };
 
   const selectedChapterData = chapters?.find(c => c.id === selectedChapter);
