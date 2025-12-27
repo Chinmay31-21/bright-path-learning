@@ -184,37 +184,16 @@ async function callProvider(
   }
 }
 
-// Hugging Face Inference API (FREE)
+// Hugging Face Inference API (FREE) - Using new Router endpoint
 async function callHuggingFace(
   apiKey: string, 
   systemPrompt: string, 
   messages: Array<{ role: string; content: string }>
 ): Promise<string> {
-  // Use Mistral-7B-Instruct - great free model for education
-  const model = 'mistralai/Mistral-7B-Instruct-v0.3';
-  
-  // Build conversation in Mistral instruction format
-  let prompt = `<s>[INST] ${systemPrompt}\n\n`;
-  
-  // Add conversation history
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-    if (msg.role === 'user') {
-      if (i > 0) prompt += '[INST] ';
-      prompt += `${msg.content} [/INST]`;
-    } else {
-      prompt += ` ${msg.content}</s>`;
-      if (i < messages.length - 1) prompt += '<s>';
-    }
-  }
-  
-  // If last message was user, model should respond
-  if (messages[messages.length - 1]?.role !== 'assistant') {
-    // Response will be generated
-  }
-
+  // Use Hugging Face's new OpenAI-compatible chat endpoint
+  // This uses the Inference Router which supports many models
   const response = await fetch(
-    `https://api-inference.huggingface.co/models/${model}`,
+    'https://router.huggingface.co/novita/v3/openai/chat/completions',
     {
       method: 'POST',
       headers: {
@@ -222,17 +201,14 @@ async function callHuggingFace(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        inputs: prompt,
-        parameters: {
-          max_new_tokens: 1024,
-          temperature: 0.7,
-          top_p: 0.95,
-          do_sample: true,
-          return_full_text: false,
-        },
-        options: {
-          wait_for_model: true,
-        }
+        model: 'meta-llama/llama-3.1-8b-instruct',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...messages
+        ],
+        max_tokens: 1024,
+        temperature: 0.7,
+        top_p: 0.95,
       }),
     }
   );
@@ -244,32 +220,22 @@ async function callHuggingFace(
     if (response.status === 429) {
       throw new Error('Hugging Face rate limit exceeded');
     }
-    if (response.status === 503) {
-      // Model loading, retry
-      throw new Error('Model is loading, please try again');
+    if (response.status === 503 || response.status === 500) {
+      throw new Error('Hugging Face service unavailable');
     }
     throw new Error(`Hugging Face API error: ${response.status} - ${errorText}`);
   }
 
   const data = await response.json();
   
-  // Handle different response formats
-  let text = '';
-  if (Array.isArray(data)) {
-    text = data[0]?.generated_text || '';
-  } else if (data.generated_text) {
-    text = data.generated_text;
-  } else if (typeof data === 'string') {
-    text = data;
-  }
+  // Handle OpenAI-compatible chat response format
+  const text = data.choices?.[0]?.message?.content || '';
   
-  // Clean up the response
-  text = text.trim();
   if (!text) {
     throw new Error('Empty response from Hugging Face');
   }
   
-  return text;
+  return text.trim();
 }
 
 // Google Gemini API
